@@ -36,8 +36,10 @@ cc_library(
     copts = ["-fexceptions"],
     features = ["-use_header_modules"],
     deps = [
-        "@xla//xla/service:custom_call_status",
+        "@xla//xla/ffi/api:ffi",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:dynamic_annotations",
+        "@com_google_absl//absl/strings:str_format",
     ],
 )
 
@@ -51,6 +53,7 @@ cc_library(
 pybind_extension(
     name = "_lapack",
     srcs = ["lapack.cc"],
+    hdrs = ["lapack.h"],
     copts = [
         "-fexceptions",
         "-fno-strict-aliasing",
@@ -59,7 +62,10 @@ pybind_extension(
     features = ["-use_header_modules"],
     module_name = "_lapack",
     pytype_srcs = [
-        "_lapack.pyi",
+        "_lapack/__init__.pyi",
+        "_lapack/schur.pyi",
+        "_lapack/svd.pyi",
+        "_lapack/eig.pyi",
     ],
     deps = [
         ":lapack_kernels",
@@ -114,6 +120,7 @@ pybind_extension(
 cc_library(
     name = "cpu_kernels",
     srcs = ["cpu_kernels.cc"],
+    hdrs = ["lapack.h"],
     visibility = ["//visibility:public"],
     deps = [
         ":ducc_fft_kernels",

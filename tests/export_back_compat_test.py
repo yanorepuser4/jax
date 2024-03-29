@@ -22,48 +22,43 @@ import itertools
 import math
 
 from absl.testing import absltest, parameterized
-
-import numpy as np
-
 import jax
 from jax import lax
-from jax.experimental.export import _export
-
+from jax._src import config
+from jax._src import test_util as jtu
 from jax._src.internal_test_util import export_back_compat_test_util as bctu
-
-from jax._src.internal_test_util.export_back_compat_test_data import cpu_ducc_fft
 from jax._src.internal_test_util.export_back_compat_test_data import cpu_cholesky_lapack_potrf
+from jax._src.internal_test_util.export_back_compat_test_data import cpu_ducc_fft
 from jax._src.internal_test_util.export_back_compat_test_data import cpu_eig_lapack_geev
-from jax._src.internal_test_util.export_back_compat_test_data import cuda_eigh_cusolver_syev
 from jax._src.internal_test_util.export_back_compat_test_data import cpu_eigh_lapack_syev
 from jax._src.internal_test_util.export_back_compat_test_data import cpu_lu_lapack_getrf
-from jax._src.internal_test_util.export_back_compat_test_data import cuda_qr_cusolver_geqrf
 from jax._src.internal_test_util.export_back_compat_test_data import cpu_qr_lapack_geqrf
 from jax._src.internal_test_util.export_back_compat_test_data import cpu_schur_lapack_gees
 from jax._src.internal_test_util.export_back_compat_test_data import cpu_svd_lapack_gesdd
 from jax._src.internal_test_util.export_back_compat_test_data import cpu_triangular_solve_blas_trsm
+from jax._src.internal_test_util.export_back_compat_test_data import cuda_eigh_cusolver_syev
+from jax._src.internal_test_util.export_back_compat_test_data import cuda_qr_cusolver_geqrf
 from jax._src.internal_test_util.export_back_compat_test_data import cuda_threefry2x32
+from jax._src.internal_test_util.export_back_compat_test_data import stablehlo_dynamic_rng_bit_generator
+from jax._src.internal_test_util.export_back_compat_test_data import stablehlo_dynamic_top_k
+from jax._src.internal_test_util.export_back_compat_test_data import tpu_ApproxTopK
 from jax._src.internal_test_util.export_back_compat_test_data import tpu_Eigh
 from jax._src.internal_test_util.export_back_compat_test_data import tpu_Lu
-from jax._src.internal_test_util.export_back_compat_test_data import tpu_ApproxTopK
 from jax._src.internal_test_util.export_back_compat_test_data import tpu_Qr
 from jax._src.internal_test_util.export_back_compat_test_data import tpu_Sharding
 from jax._src.internal_test_util.export_back_compat_test_data import tpu_stablehlo_dynamic_reduce_window
-from jax._src.internal_test_util.export_back_compat_test_data import stablehlo_dynamic_rng_bit_generator
-from jax._src.internal_test_util.export_back_compat_test_data import stablehlo_dynamic_top_k
-
+from jax._src.lib import cuda_versions
+from jax._src.lib import version as jaxlib_version
 from jax.experimental import pjit
+from jax.experimental.export import _export
 from jax.experimental.shard_map import shard_map
 import jax.numpy as jnp
-
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
-
-from jax._src import config
-from jax._src import test_util as jtu
-from jax._src.lib import cuda_versions
+import numpy as np
 
 config.parse_flags_with_absl()
+unsupported_xla_apiv4 = jaxlib_version <= (0, 4, 28)
 
 def _is_required_cusolver_version_satisfied(required_version):
   if cuda_versions is None:
@@ -107,19 +102,29 @@ class CompatTest(bctu.CompatTestBase):
     targets_to_cover = set(_export._CUSTOM_CALL_TARGETS_GUARANTEED_STABLE)
     # Add here all the testdatas that should cover the targets guaranteed
     # stable
+    cpu_lapack_testdatas = [
+        cpu_cholesky_lapack_potrf.data_2024_05_28,
+        cpu_eig_lapack_geev.data_2024_05_28,
+        cpu_eigh_lapack_syev.data_2024_05_28,
+        cpu_qr_lapack_geqrf.data_2024_05_28,
+        cpu_lu_lapack_getrf.data_2024_05_28,
+        cpu_schur_lapack_gees.data_2024_05_28,
+        cpu_svd_lapack_gesdd.data_2024_05_28,
+        cpu_triangular_solve_blas_trsm.data_2024_05_28,
+    ]
+    if unsupported_xla_apiv4:
+      cpu_lapack_testdatas.clear()
     covering_testdatas = [
         cpu_ducc_fft.data_2023_06_14,
-        cpu_cholesky_lapack_potrf.data_2023_06_19,
-        cpu_eig_lapack_geev.data_2023_06_19,
-        cpu_eigh_lapack_syev.data_2023_03_17,
-        cpu_qr_lapack_geqrf.data_2023_03_17, cuda_threefry2x32.data_2023_03_15,
-        cpu_lu_lapack_getrf.data_2023_06_14,
-        cuda_qr_cusolver_geqrf.data_2023_03_18, cuda_eigh_cusolver_syev.data_2023_03_17,
-        cpu_schur_lapack_gees.data_2023_07_16,
-        cpu_svd_lapack_gesdd.data_2023_06_19,
-        cpu_triangular_solve_blas_trsm.data_2023_07_16,
-        tpu_Eigh.data, tpu_Lu.data_2023_03_21, tpu_Qr.data_2023_03_17,
-        tpu_Sharding.data_2023_03_16, tpu_ApproxTopK.data_2023_04_17,
+        *cpu_lapack_testdatas,
+        cuda_threefry2x32.data_2023_03_15,
+        cuda_qr_cusolver_geqrf.data_2023_03_18,
+        cuda_eigh_cusolver_syev.data_2023_03_17,
+        tpu_Eigh.data,
+        tpu_Lu.data_2023_03_21,
+        tpu_Qr.data_2023_03_17,
+        tpu_Sharding.data_2023_03_16,
+        tpu_ApproxTopK.data_2023_04_17,
         tpu_ApproxTopK.data_2023_05_16,
         tpu_stablehlo_dynamic_reduce_window.data_unary_2023_06_17,
         tpu_stablehlo_dynamic_reduce_window.data_variadic_2023_06_17,
@@ -164,26 +169,31 @@ class CompatTest(bctu.CompatTestBase):
       dict(testcase_name=f"_dtype={dtype_name}", dtype_name=dtype_name)
       for dtype_name in ("f32", "f64", "c64", "c128"))
   def test_cpu_cholesky_lapack_potrf(self, dtype_name="f32"):
+    if unsupported_xla_apiv4:
+      self.skipTest("Test only compatible with XLA APIv4 and higher")
     if not config.enable_x64.value and dtype_name in ["f64", "c128"]:
       self.skipTest("Test disabled for x32 mode")
 
     dtype = dict(f32=np.float32, f64=np.float64,
                  c64=np.complex64, c128=np.complex128)[dtype_name]
     shape = (4, 4)
-    input = self.cholesky_input(shape, dtype)
-    del input  # Input is in the testdata, here for readability
+    inputs = (self.cholesky_input(shape, dtype),)
+    del inputs  # Input is in the testdata, here for readability
+
     func = lax.linalg.cholesky
 
     rtol = dict(f32=1e-3, f64=1e-5, c64=1e-3, c128=1e-5)[dtype_name]
     atol = dict(f32=1e-4, f64=1e-12, c64=1e-4, c128=1e-12)[dtype_name]
 
-    data = self.load_testdata(cpu_cholesky_lapack_potrf.data_2023_06_19[dtype_name])
+    data = self.load_testdata(cpu_cholesky_lapack_potrf.data_2024_05_28[dtype_name])
     self.run_one_test(func, data, rtol=rtol, atol=atol)
 
   @parameterized.named_parameters(
       dict(testcase_name=f"_dtype={dtype_name}", dtype_name=dtype_name)
       for dtype_name in ("f32", "f64", "c64", "c128"))
   def test_cpu_eig_lapack_geev(self, dtype_name="f32"):
+    if unsupported_xla_apiv4:
+      self.skipTest("Test only compatible with XLA APIv4 and higher")
     if not config.enable_x64.value and dtype_name in ["f64", "c128"]:
       self.skipTest("Test disabled for x32 mode")
 
@@ -197,7 +207,7 @@ class CompatTest(bctu.CompatTestBase):
                             compute_left_eigenvectors=True,
                             compute_right_eigenvectors=True)
 
-    data = self.load_testdata(cpu_eig_lapack_geev.data_2023_06_19[dtype_name])
+    data = self.load_testdata(cpu_eig_lapack_geev.data_2024_05_28[dtype_name])
     rtol = dict(f32=1e-3, f64=1e-5, c64=1e-3, c128=1e-5)[dtype_name]
     atol = dict(f32=1e-4, f64=1e-12, c64=1e-4, c128=1e-12)[dtype_name]
 
@@ -275,6 +285,8 @@ class CompatTest(bctu.CompatTestBase):
       dict(testcase_name=f"_dtype={dtype_name}", dtype_name=dtype_name)
       for dtype_name in ("f32", "f64", "c64", "c128"))
   def test_cpu_eigh_lapack_syevd(self, dtype_name="f32"):
+    if unsupported_xla_apiv4:
+      self.skipTest("Test only compatible with XLA APIv4 and higher")
     # For lax.linalg.eigh
     if not config.enable_x64.value and dtype_name in ["f64", "c128"]:
       self.skipTest("Test disabled for x32 mode")
@@ -284,7 +296,7 @@ class CompatTest(bctu.CompatTestBase):
     size = 8
     operand = CompatTest.eigh_input((size, size), dtype)
     func = lambda: CompatTest.eigh_harness((8, 8), dtype)
-    data = self.load_testdata(cpu_eigh_lapack_syev.data_2023_03_17[dtype_name])
+    data = self.load_testdata(cpu_eigh_lapack_syev.data_2024_05_28[dtype_name])
     rtol = dict(f32=1e-3, f64=1e-5, c64=1e-3, c128=1e-5)[dtype_name]
     atol = dict(f32=1e-4, f64=1e-12, c64=1e-4, c128=1e-12)[dtype_name]
     self.run_one_test(func, data, rtol=rtol, atol=atol,
@@ -338,6 +350,8 @@ class CompatTest(bctu.CompatTestBase):
       dict(testcase_name=f"_dtype={dtype_name}", dtype_name=dtype_name)
       for dtype_name in ("f32", "f64", "c64", "c128"))
   def test_cpu_qr_lapack_geqrf(self, dtype_name="f32"):
+    if unsupported_xla_apiv4:
+      self.skipTest("Test only compatible with XLA APIv4 and higher")
     # For lax.linalg.qr
     if not config.enable_x64.value and dtype_name in ["f64", "c128"]:
       self.skipTest("Test disabled for x32 mode")
@@ -345,7 +359,7 @@ class CompatTest(bctu.CompatTestBase):
     dtype = dict(f32=np.float32, f64=np.float64,
                  c64=np.complex64, c128=np.complex128)[dtype_name]
     func = lambda: CompatTest.qr_harness((3, 3), dtype)
-    data = self.load_testdata(cpu_qr_lapack_geqrf.data_2023_03_17[dtype_name])
+    data = self.load_testdata(cpu_qr_lapack_geqrf.data_2024_05_28[dtype_name])
     rtol = dict(f32=1e-3, f64=1e-5, c64=1e-3, c128=1e-5)[dtype_name]
     self.run_one_test(func, data, rtol=rtol)
 
@@ -406,6 +420,8 @@ class CompatTest(bctu.CompatTestBase):
            dtype_name=dtype_name)
       for dtype_name in ("f32", "f64", "c64", "c128"))
   def test_cpu_lu_lapack_getrf(self, dtype_name:str):
+    if unsupported_xla_apiv4:
+      self.skipTest("Test only compatible with XLA APIv4 and higher")
     # For lax.linalg.lu on CPU.
     if not config.enable_x64.value and dtype_name in ["f64", "c128"]:
       self.skipTest("Test disabled for x32 mode")
@@ -413,7 +429,7 @@ class CompatTest(bctu.CompatTestBase):
                  c64=np.complex64, c128=np.complex128)[dtype_name]
     shape = (3, 3)
     func = lambda: CompatTest.lu_harness(shape, dtype)
-    data = self.load_testdata(cpu_lu_lapack_getrf.data_2023_06_14[dtype_name])
+    data = self.load_testdata(cpu_lu_lapack_getrf.data_2024_05_28[dtype_name])
     operand = np.reshape(np.arange(math.prod(shape), dtype=dtype), shape)
     rtol = dict(f32=1e-3, f64=1e-5, c64=1e-3, c128=1e-5)[dtype_name]
     atol = dict(f32=1e-4, f64=1e-12, c64=1e-4, c128=1e-12)[dtype_name]
@@ -485,32 +501,33 @@ class CompatTest(bctu.CompatTestBase):
       self.assertTrue(np.allclose(np.linalg.svd(a, compute_uv=False),
                                   np.asarray(out), atol=1e-4, rtol=1e-4))
 
-  @jtu.parameterized_filterable(
-    one_containing="f32",
-    kwargs=[
-      dict(testcase_name=f"_dtype={dtype_name}", dtype_name=dtype_name)
-      for dtype_name in ("f32", "f64", "c64", "c128")])
+  @parameterized.named_parameters(
+      dict(testcase_name=f"_dtype={dtype_name}",
+           dtype_name=dtype_name)
+      for dtype_name in ("f32", "f64", "c64", "c128"))
   @jax.default_matmul_precision("float32")
   def test_cpu_schur_lapack_gees(self, dtype_name="f32"):
+    if unsupported_xla_apiv4:
+      self.skipTest("Test only compatible with XLA APIv4 and higher")
     if not config.enable_x64.value and dtype_name in ["f64", "c128"]:
       self.skipTest("Test disabled for x32 mode")
 
     dtype = dict(f32=np.float32, f64=np.float64,
                  c64=np.complex64, c128=np.complex128)[dtype_name]
     shape = (4, 4)
-    input = np.arange(math.prod(shape), dtype=dtype).reshape(shape)
+    input_data = np.arange(math.prod(shape), dtype=dtype).reshape(shape)
 
-    def func(input):
-      return lax.linalg.schur(input, compute_schur_vectors=True)
+    def func(input_data):
+      return lax.linalg.schur(input_data, compute_schur_vectors=True)
 
     rtol = dict(f32=1e-3, f64=1e-5, c64=1e-3, c128=1e-5)[dtype_name]
     atol = dict(f32=1e-4, f64=1e-12, c64=1e-4, c128=1e-12)[dtype_name]
 
-    data = self.load_testdata(cpu_schur_lapack_gees.data_2023_07_16[dtype_name])
+    data = self.load_testdata(cpu_schur_lapack_gees.data_2024_05_28[dtype_name])
 
     def check_schur_results(res_run, res_expected, *, rtol, atol):
       t_run, s_run = res_run
-      self.assertAllClose(input, s_run @ t_run @ np.conj(s_run.T),
+      self.assertAllClose(input_data, s_run @ t_run @ np.conj(s_run.T),
                           rtol=rtol, atol=atol)
 
     self.run_one_test(func, data, rtol=rtol, atol=atol,
@@ -521,24 +538,26 @@ class CompatTest(bctu.CompatTestBase):
       for dtype_name in ("f32", "f64", "c64", "c128"))
   @jax.default_matmul_precision("float32")
   def test_cpu_svd_lapack_gesdd(self, dtype_name="f32"):
+    if unsupported_xla_apiv4:
+      self.skipTest("Test only compatible with XLA APIv4 and higher")
     if not config.enable_x64.value and dtype_name in ["f64", "c128"]:
       self.skipTest("Test disabled for x32 mode")
 
     dtype = dict(f32=np.float32, f64=np.float64,
                  c64=np.complex64, c128=np.complex128)[dtype_name]
     shape = (2, 4, 4)
-    input = jtu.rand_default(self.rng())(shape, dtype)
-    # del input  # Input is in the testdata, here for readability
-    def func(input):
-      return lax.linalg.svd(input, full_matrices=True, compute_uv=True)
+    input_data = jtu.rand_default(self.rng())(shape, dtype)
+    # del input_data  # Input is in the testdata, here for readability
+    def func(input_data):
+      return lax.linalg.svd(input_data, full_matrices=True, compute_uv=True)
 
     rtol = dict(f32=1e-3, f64=1e-5, c64=1e-3, c128=1e-5)[dtype_name]
     atol = dict(f32=1e-4, f64=1e-12, c64=1e-4, c128=1e-12)[dtype_name]
 
-    data = self.load_testdata(cpu_svd_lapack_gesdd.data_2023_06_19[dtype_name])
+    data = self.load_testdata(cpu_svd_lapack_gesdd.data_2024_05_28[dtype_name])
     self.run_one_test(func, data, rtol=rtol, atol=atol,
                       check_results=partial(self.check_svd_results,
-                                            input))
+                                            input_data))
 
   @jtu.parameterized_filterable(
     kwargs=[
@@ -546,6 +565,8 @@ class CompatTest(bctu.CompatTestBase):
       for dtype_name in ("f32", "f64", "c64", "c128")])
   @jax.default_matmul_precision("float32")
   def test_cpu_triangular_solve_blas_trsm(self, dtype_name="f32"):
+    if unsupported_xla_apiv4:
+      self.skipTest("Test only compatible with XLA APIv4 and higher")
     if not config.enable_x64.value and dtype_name in ["f64", "c128"]:
       self.skipTest("Test disabled for x32 mode")
 
@@ -566,7 +587,7 @@ class CompatTest(bctu.CompatTestBase):
     rtol = dict(f32=1e-3, f64=1e-5, c64=1e-3, c128=1e-5)[dtype_name]
     atol = dict(f32=1e-4, f64=1e-12, c64=1e-4, c128=1e-12)[dtype_name]
 
-    data = self.load_testdata(cpu_triangular_solve_blas_trsm.data_2023_07_16[dtype_name])
+    data = self.load_testdata(cpu_triangular_solve_blas_trsm.data_2024_05_28[dtype_name])
 
     def check_triangular_solve_results(res_run, res_expected, *, rtol, atol):
       x, = res_run
@@ -596,7 +617,7 @@ class CompatTest(bctu.CompatTestBase):
   def test_sharding(self):
     # Tests "Sharding", "SPMDShardToFullShape", "SPMDFullToShardShape" on TPU
     if not jtu.test_device_matches(["tpu"]) or len(jax.devices()) < 2:
-     self.skipTest("Test runs only on TPU with at least 2 devices")
+      self.skipTest("Test runs only on TPU with at least 2 devices")
 
     # Must use exactly 2 devices for expected outputs from ppermute
     devices = jax.devices()[:2]

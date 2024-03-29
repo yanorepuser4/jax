@@ -41,6 +41,7 @@ from jax._src import effects
 from jax._src.interpreters import mlir
 from jax._src.interpreters import pxla
 from jax._src.lib import xla_client
+from jax._src.lib import version as jaxlib_version
 from jax._src.lib.mlir import ir
 from jax._src.lib.mlir.dialects import hlo
 from jax._src.lib.mlir.dialects import func as func_dialect
@@ -754,20 +755,12 @@ def _check_lowering(lowering) -> None:
         "serialization error, unimplemented lowered.compile_args:\n" +
         "\n".join(not_implemented_msgs))
 
-# These are the JAX custom call target names that are guaranteed to be stable.
-# Their backwards compatibility is tested by back_compat_test.py.
-_CUSTOM_CALL_TARGETS_GUARANTEED_STABLE = {
-    "Sharding", "SPMDFullToShardShape", "SPMDShardToFullShape",
-    "dynamic_ducc_fft", "cu_threefry2x32",
-    "__gpu$xla.gpu.triton",  # Pallas call on GPU
+unsupported_xla_apiv4 = jaxlib_version <= (0, 4, 28)
+_CUSTOM_CALL_TARGETS_LAPACK = {
     # cholesky on CPU
     "lapack_spotrf", "lapack_dpotrf", "lapack_cpotrf", "lapack_zpotrf",
     # eigh on CPU
     "lapack_ssyevd", "lapack_dsyevd", "lapack_cheevd", "lapack_zheevd",
-    # eigh on GPU
-    "cusolver_syevj", "cusolver_syevd",
-    # eigh on TPU
-    "Eigh",
     # eig on CPU
     "lapack_sgeev", "lapack_dgeev", "lapack_cgeev", "lapack_zgeev",
     # qr on CPU
@@ -776,18 +769,31 @@ _CUSTOM_CALL_TARGETS_GUARANTEED_STABLE = {
     "lapack_sorgqr", "lapack_dorgqr", "lapack_cungqr", "lapack_zungqr",
     # svd on CPU
     "lapack_sgesdd", "lapack_dgesdd", "lapack_cgesdd", "lapack_zgesdd",
+    # triangular_solve on CPU
+    "blas_strsm", "blas_dtrsm", "blas_ctrsm", "blas_ztrsm",
+    # TODO(atondwal, necula): add back_compat tests for lu on CPU/GPU
+    # lu on CPU
+    "lapack_sgetrf",  "lapack_dgetrf", "lapack_cgetrf", "lapack_zgetrf",
+    # schur on CPU
+    "lapack_sgees", "lapack_dgees", "lapack_cgees", "lapack_zgees",
+} if not unsupported_xla_apiv4 else {}
+
+# These are the JAX custom call target names that are guaranteed to be stable.
+# Their backwards compatibility is tested by back_compat_test.py.
+_CUSTOM_CALL_TARGETS_GUARANTEED_STABLE = {
+    "Sharding", "SPMDFullToShardShape", "SPMDShardToFullShape",
+    "dynamic_ducc_fft", "cu_threefry2x32",
+    "__gpu$xla.gpu.triton",  # Pallas call on GPU
+    *_CUSTOM_CALL_TARGETS_LAPACK,
+    # eigh on GPU
+    "cusolver_syevj", "cusolver_syevd",
+    # eigh on TPU
+    "Eigh",
     # qr on GPU
     "cusolver_geqrf", "cublas_geqrf_batched",
     "cusolver_orgqr",
     # qr and svd on TPU
     "Qr", "ProductOfElementaryHouseholderReflectors",
-    # triangular_solve on CPU
-    "blas_strsm", "blas_dtrsm", "blas_ctrsm", "blas_ztrsm",
-    # TODO(atondwal, necula): add back_compat tests for lu on CPU/GPU
-    # # lu on CPU
-    "lapack_sgetrf",  "lapack_dgetrf", "lapack_cgetrf", "lapack_zgetrf",
-    # schur on CPU
-    "lapack_sgees", "lapack_dgees", "lapack_cgees", "lapack_zgees",
     # # lu on GPU
     # "cublas_getrf_batched", "cusolver_getrf",
     # "hipblas_getrf_batched", "hipsolver_getrf",
