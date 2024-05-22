@@ -813,7 +813,9 @@ class JaxExportTest(jtu.JaxTestCase):
     if str(dtype) in {"float8_e4m3b11fnuz",
                       "float8_e4m3fnuz",
                       "float8_e5m2fnuz",
+                      "int2",
                       "int4",
+                      "uint2",
                       "uint4"}:
       self.skipTest(f"TODO: serialization not supported for {str(dtype)}")
     def f_jax(x):
