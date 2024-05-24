@@ -43,7 +43,8 @@ from jax._src.lib import xla_extension as xe
 from jax._src.sharding import Sharding
 from jax._src.sharding_impls import (
     PmapSharding, SingleDeviceSharding, XLACompatibleSharding,
-    device_replica_id_map, hashed_index, num_addressable_indices)  # pyformat: disable
+    device_replica_id_map, hashed_index, local_to_global_shape,
+    num_addressable_indices)  # pyformat: disable
 from jax._src.typing import ArrayLike, DLDeviceType
 from jax._src.util import safe_zip, unzip3, use_cpp_class, use_cpp_method
 import numpy as np
@@ -735,7 +736,7 @@ def make_array_from_callback(
 def make_array_from_process_local_data(
     sharding: Sharding,
     local_data: np.ndarray,
-    global_shape: tuple[int, ...],
+    global_shape: tuple[int | None, ...] | None = None,
 ) -> ArrayImpl:
   # pyformat: disable
   """Creates distributed tensor using the data available in process.
@@ -744,26 +745,32 @@ def make_array_from_process_local_data(
   assumes that the data is available in the process and takes care of the
   index wrangling.
 
-  Note, if the two hosts are replicas, host_local_data should be identical as
-  well.
-  Each dimension of the shape of host_local_data should either match
-  global_shape or the # indices the devices on this process need to
-  address. For example if dimension $i$ is fully sharded then this size would be
-  `per_device_shape[i] * jax.local_device_count()`.
-
-  If the shape matches global shape, each device slice will just lookup
-  the slice in the local_data. In the latter case the global slice of each
-  device will be mapped into local slice of `local_data` array. For example,
-  if given process only addresses slices (8, 12) and  (24, 28), then
-  these slices will be mapped into (0, 4) and (4, 8) of the `local_data`.
-
-  This function can be used to create tensors from dataset feeding pipelines.
-
-  The most common case is when the sharding is fully sharded across the batch
+  The most common case is when the sharding is sharded across the batch
   dimension and each host just loads its corresponding sub-batch. This function
-  supports more general case as well, such as multi-host replication
-  but you would need to compute the size and the contents of process-local data
-  correctly to satisfy the replication constraints.
+  supports more general cases as well, such as mixed multi-host and multi-axis
+  replication and sharding but you would need to compute the size and the
+  contents of process-local data correctly to satisfy the sharding constraints.
+
+  In particular, if any two hosts are replicas, host_local_data should be
+  identical as well.
+
+  The global_shape is optional. WHen it is not None, then each dimension of the shape of
+  host_local_data should either match the global_shape or the # indices the
+  devices on this process need to address.  For example if dimension $i$ is
+  fully sharded then this size would be `per_device_shape[i] * jax.local_device_count()`.
+  Each device will be mapped into local slice of `local_data`
+  array. For example, if given process  addresses slices (8, 12) and  (24, 28),
+  then these slices will be mapped into (0, 4) and (4, 8) of the `local_data`.
+
+  For each dimension where global_shapes matches local_shape, each device
+  will lookup the slice in the local_data. For example if
+  global_shape == local_data.shape, the local data is assumed to be the
+  actual target array that will be sharded into device.
+
+  Finally, if any dimension is None (or global_shape is None for all dimensions),
+  then the corresponding dimension will be inferred from the local_data and sharding,
+  under the assumption that each host represents only their own data for uniform
+  sharding and complete slice for non-uniform sharding (see note below).
 
   Examples:
     >>> from jax.sharding import PartitionSpec as P
@@ -785,19 +792,66 @@ def make_array_from_process_local_data(
     >>> assert output_global_array.addressable_data(0).shape == per_device_shape
     >>> assert output_global_array.shape == global_shape
 
+  NB: It is possible to design am exotic sharding mesh where each process's
+  devices will be arranged in a non-grid like pattern in some dimensions,
+  or for indices to overlap non-trivially. Such sharding is called "non-uniform"
+  in those dimensions. In that case, the global shape along those
+  directions must match local shape as there is simple way to represent all needed
+  per-process data. For example for global_sahpe 4x4 if sharding looks like this:
+
+      0123
+      2103
+      4675
+      4567
+
+  with 4 processes, containing devies (0,1), (2, 3), (4, 5), (6, 7) respectively.
+  Then the data for host 0 and 2 will look like
+
+      xx..    ..xx     ....    ....
+      .xx.    x..x     ....    ....
+      ....    ....     x..x    .xx.
+      ....    ....     xx..    ..xx
+
+  the sharding is uniform on rows (each host requires either rows 1-2, or rows 3-4)
+  and non-uniform on columns (hosts require overlapping but not matching
+  set of columns). Thus local data must have the shape 2x4 or 4x4
+  for all hosts, even though each  host can potentially fit into 2x2 shape.
+
+  On the other hand for sharding:
+      0213   x.x.  .x.x.  ....  ....
+      0213   x.x.  .x.x.  ....  ....
+      4657   ....  ....   .x.x  x.x.
+      4657   ....  ....   .x.x  x.x.
+  can accept a choice of 2x2, 2x4, 4x2 and 4x4 slices for all hosts.
+
   Args:
     sharding: sharding of the global tensor.
     host_local_data: data on the host to be placed on local devices. Each
       dimension should either match global_shape, or match
       num_addressable_indices(dim).
-    global_shape: the target shape of the global tensor. In some cases this
-      parameter can be inferred from sharding and host_local_data, however it is
-      useful to catch common sharding errors.
+    global_shape: the target shape of the global tensor. If None,
+      or any individual dimension is None, will infer the corresponding
+      dimensions from host_local_data and sharding.
+
+      Setting explicit global_shape allows to catch sharding errors and
+      simplifies creation of global arrays in cases the data is fully
+      available on each host along some or all dimensions.
 
   Returns:
-    Tensor that will have sharding=sharding.
+    Tensor that will have sharding=sharding and of shape global_shape.
   """
   # pyformat: enable
+  if global_shape is None:
+    global_shape = [None] * len(local_data.shape)
+  local_shape = local_data.shape
+  computed_shape = local_to_global_shape(sharding, local_shape)
+  global_shape = tuple(
+      shape or computed or local
+      for (shape, computed, local) in safe_zip(
+          global_shape, computed_shape, local_shape
+      )
+  )
+
   shard_shape = sharding.shard_shape(global_shape)
   full_dim = []
   for i, (data_dim, global_dim) in enumerate(

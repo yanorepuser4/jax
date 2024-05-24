@@ -1386,6 +1386,156 @@ def _slice_as_tuple(s: slice):
   return (s.start, s.stop)
 
 
+class NonUniformShardingError(ValueError):
+  """Raised when sharding is not uniform across processes."""
+
+
+def get_process_index_and_count(
+    tensor_sharding: sharding.Sharding,
+    dim: int,
+    ndims: int,
+) -> tuple[int, int]:
+  """Returns current process index and total count for the given dimension.
+
+  This function facilitates mapping of process-level data to individual
+  devices. Each process can use its index to obtain the data corresponding
+  to that index. If process level data is sharded on multiple dimensions
+  this function can be used to build the cross product of indices in
+  each sharded axis. Processes that need to load the same data will have
+  the same index. For shardings whose per-process data is not distributed
+  on a grid, the number of distinct shards will be such that it is possible to
+  build the target shape while maintaining a "cube" shape of local-process data.
+
+  For example, in case of 4 hosts with sharding distributed like so:
+
+  1234
+  2143
+
+  For dim 0 (rows): all processes need to access all rows, so we return (0, 1)
+  For dim 1 (cols):
+     process 1 and 2 returns index 0 out of 2 (need cols 0 and 1),
+     process 3 and 4 returns index 1 out of 2 (need cols 2 and 3).
+
+  On the other hand, for a sharding like:
+
+  1212
+  3434
+
+  Dim 0 (rows): process 1 and 2 returns (0, 2), process 3 and 4 returns (1, 2)
+  Dim 1 (cols): process 1 and 3 returns (0, 2), process 2 and 4 returns (1, 2)
+
+  Note: This function requires sharding to be process uniform in dimension
+  `dim`:
+   each process has the same number of addressable indices in that
+  dimension and all index sets across processes are either disjoint or the same.
+
+  For sharding to be process uniform the addressable shards doesn't need to
+  form contiguous subtensor, or even a sparse grid  and  in case of
+  interleaved high-dimensional tensor it is possible for sharding to be
+  process uniform only in some dimensions but not others.
+
+  For example:
+    1111 and 12 and 1212 and 1212
+    2222     21     2121     1212
+
+  are all sharding uniform, in both dimensions. However
+
+    1122
+    2121
+    1121
+    1222
+
+  is uniform in dimension 0 (both hosts access all rows), but
+  is not uniform in dimension 1 (host 1 accesses columns: 0, 1, and 3),
+  while host 2 accesses (0, 1, 2, 3).
+
+  Returns:
+    A tuple of (index, num_distinct_shards) for the given dimension.
+    It is guaranteed that `index` will cover 0 to `num_distinct_shards - 1`,
+    across all processes.
+
+  Raises:
+    ValueError if the sharding is not process uniform in dimension `dim`.
+  """
+  # TODO(sandler, yashkatariya): Consider making this function public.
+
+  if (
+      tensor_sharding.is_fully_addressable
+      or tensor_sharding.is_fully_replicated
+  ):
+    return (0, 1)
+  num_devices = len(tensor_sharding.device_set)
+  device_map = tensor_sharding.devices_indices_map((num_devices,) * ndims)
+  global_slice = {k: v[dim] for k, v in device_map.items()}
+  process_map: dict[int, set[tuple[int, int]]] = {}
+  all_slices = set()
+
+  current_pid = next(iter(tensor_sharding.addressable_devices)).process_index
+  for d, v in global_slice.items():
+    key = (v.start, v.stop)
+    process_map.setdefault(d.process_index, set()).add(key)
+    all_slices.add(key)
+  addressable = frozenset(process_map[current_pid])
+  slices_per_process = len(addressable)
+  if any(len(x) != slices_per_process for x in process_map.values()):
+    raise NonUniformShardingError(
+        f'{tensor_sharding=} is non-uniform on {dim=}'
+    )
+  unique_processes = list({frozenset(x) for x in process_map.values()})
+
+  # After removing duplicate processes each slide should appear exactly once.
+  if sum(len(h) for h in unique_processes) != len(all_slices):
+    raise NonUniformShardingError(
+        f'{tensor_sharding=} is non-uniform on {dim=}'
+    )
+  return (unique_processes.index(addressable), len(unique_processes))
+
+
+def local_to_global_shape(
+    sharding: sharding.Sharding,
+    local_shape: Shape,
+) -> tuple[int | None, ...]:
+  """Computes the global shape given the per process if possible.
+
+  The returned shape will have the size of the global tensor in that dimension
+  or None, if it is not computable. The latter can happen when sharding
+  is not uniform along that dimension, e.g. different hosts require
+  different shapes, or if different processes have partial data overlap.
+
+  If at most one dimension is sharded the shape is always computable.
+  Generally, global shape is computable for most practical meshes (including
+  topology aware such as meshes returned by mesh_utils.create_device_mesh)
+
+  Some examples:
+  - Dimension is fully replicated: returned-dim = local_dim
+  - Dimension is fully sharded with k processes:
+      returned_dim = k * local_dim
+  - Dimension is 8-way sharded, across 2 processes, 4 devices per process:
+      returned_dim = 2 * local_dim
+  - Dimension is 4 way sharded, another dimension is 2 way sharded *AND*
+  devices in the mesh are randmoly permuted: returned_dim = None.
+
+  Args:
+    local_shape: global shape of the tensor.
+
+  Returns:
+    global_shape with Nones in non-uniform dimensions.
+  """
+
+  global_shape = [None] * len(local_shape)
+  for i, local_dim in enumerate(local_shape):
+    try:
+      _, shard_count = get_process_index_and_count(
+          sharding, i, ndims=len(local_shape)
+      )
+      global_shape[i] = local_dim * shard_count
+    except NonUniformShardingError:
+      global_shape[i] = None
+      continue
+
+  return tuple(global_shape)
+
+
 def num_addressable_indices(
     tensor_sharding: sharding.Sharding,
     dim: int,
